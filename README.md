@@ -167,7 +167,13 @@ _Prerequisites_: Make sure you have [Visual Studio Code](https://code.visualstud
 
 ### Gemini CLI Integration
 
-To use Blender MCP with the Gemini CLI:
+To use Blender MCP with the Gemini CLI, you first need to install the official CLI tool:
+
+```bash
+npm install -g @google/gemini-cli
+```
+
+Once installed, follow these steps to configure it:
 
 1. Locate or create your Gemini CLI configuration file (e.g., `.gemini/settings.json`).
 2. Add the blender-mcp configuration to the `mcpServers` object:
