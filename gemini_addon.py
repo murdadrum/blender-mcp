@@ -165,3 +165,40 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
+class GeminiSettings(bpy.types.PropertyGroup):
+    # ... your existing properties ...
+    connection_status: bpy.props.EnumProperty(
+        items=[
+            ('NONE', "Not Tested", ""),
+            ('SUCCESS', "Success", ""),
+            ('FAILED', "Failed", "")
+        ],
+        default='NONE'
+    )
+
+class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
+    bl_idname = "object.gemini_test_connection"
+    bl_label = "Test Connection"
+    
+    def execute(self, context):
+        from google import genai
+        settings = context.scene.gemini_tools
+        
+        # Use key from .env first, then fallback to UI field
+        api_key = os.getenv("GEMINI_API_KEY") or settings.api_key
+        
+        try:
+            client = genai.Client(api_key=api_key)
+            # Minimal request to verify key
+            client.models.generate_content(
+                model="gemini-2.0-flash", 
+                contents="ping"
+            )
+            settings.connection_status = 'SUCCESS'
+            self.report({'INFO'}, "Gemini Connection: SUCCESS")
+        except Exception as e:
+            settings.connection_status = 'FAILED'
+            self.report({'ERROR'}, f"Gemini Connection: FAILED - {str(e)}")
+            
+        return {'FINISHED'}
