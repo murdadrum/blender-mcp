@@ -1,115 +1,99 @@
 import bpy
-import sys
-import subprocess
 import os
+import sys
 from dotenv import load_dotenv, find_dotenv
-
-# Find the .env file in your local git repo
-# This works if addon.py is in the same folder as .env
-load_dotenv(find_dotenv()) 
-
-# Fallback check
-api_key = os.getenv("GEMINI_API_KEY")
 
 # --- ADDON METADATA ---
 bl_info = {
     "name": "Gemini 3 Blender Assistant",
     "author": "AI Thought Partner",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Gemini MCP",
-    "description": "Direct Gemini 3 API integration for code generation and execution",
+    "description": "Direct Gemini 3 API integration for code generation",
     "category": "Development",
 }
 
-# --- DEPENDENCY MANAGEMENT ---
-def ensure_dependencies():
-    """Ensure google-genai is available in the path."""
-    user_modules = os.path.join(bpy.utils.user_resource('SCRIPTS'), "modules")
-    if user_modules not in sys.path:
-        sys.path.append(user_modules)
-    
-    try:
-        from google import genai
-        return genai
-    except ImportError:
-        return None
+# --- INITIALIZE ENVIRONMENT ---
+# Load .env from your git repo immediately upon script execution
+load_dotenv(find_dotenv())
 
 # --- PROPERTIES ---
 class GeminiSettings(bpy.types.PropertyGroup):
     api_key: bpy.props.StringProperty(
         name="API Key",
-        description="Enter your Google AI Studio API Key",
+        description="Google AI Studio API Key (Leave blank if set in .env)",
         subtype='PASSWORD'
     )
     prompt_input: bpy.props.StringProperty(
         name="Prompt",
-        description="Describe what you want to create or modify",
-        default="Add a grid of 25 cubes with random heights"
+        description="Describe what you want to create",
+        default="Add a torus with a gold material"
     )
     model_name: bpy.props.EnumProperty(
         name="Model",
         items=[
-            ('gemini-3-flash', "Gemini 3 Flash (Fast)", "Fastest and efficient"),
-            ('gemini-3-pro-preview', "Gemini 3 Pro (Smart)", "Best for complex logic"),
+            ('gemini-3-flash', "Gemini 3 Flash", "Fastest"),
+            ('gemini-3-pro-preview', "Gemini 3 Pro", "Complex Logic"),
         ],
         default='gemini-3-flash'
     )
+    connection_status: bpy.props.EnumProperty(
+        items=[
+            ('NONE', "Not Tested", ""),
+            ('SUCCESS', "Success", ""),
+            ('FAILED', "Failed", "")
+        ],
+        default='NONE'
+    )
 
 # --- OPERATORS ---
-class OBJECT_OT_GeminiExecute(bpy.types.Operator):
-    bl_idname = "object.gemini_execute"
-    bl_label = "Generate & Execute"
-    bl_description = "Send prompt to Gemini and run the resulting Python code"
+class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
+    bl_idname = "object.gemini_test_connection"
+    bl_label = "Test Connection"
     
     def execute(self, context):
-        genai = ensure_dependencies()
-        if not genai:
-            self.report({'ERROR'}, "Gemini SDK not found. Please install google-genai.")
-            return {'CANCELLED'}
-        
+        from google import genai
         settings = context.scene.gemini_tools
-        if not settings.api_key:
-            self.report({'ERROR'}, "Please enter an API Key first.")
-            return {'CANCELLED'}
-
-        client = genai.Client(api_key=settings.api_key)
-        
-        # System prompt to ensure we only get raw code
-        full_prompt = (
-            "System: You are a Blender Python expert. Output ONLY raw, valid Python code "
-            "ready for Blender's exec() function. Do not include markdown formatting or explanations. "
-            f"User Task: {settings.prompt_input}"
-        )
+        # Priority: 1. .env file | 2. UI Field
+        key = os.getenv("GEMINI_API_KEY") or settings.api_key
         
         try:
-            # Change the cursor to indicate processing
-            wm = context.window_manager
-            wm.progress_begin(0, 100)
+            client = genai.Client(api_key=key)
+            client.models.generate_content(model="gemini-2.0-flash", contents="ping")
+            settings.connection_status = 'SUCCESS'
+            self.report({'INFO'}, "Connected successfully!")
+        except Exception as e:
+            settings.connection_status = 'FAILED'
+            self.report({'ERROR'}, f"Failed: {str(e)}")
             
-            response = client.models.generate_content(
-                model=settings.model_name,
-                contents=full_prompt
-            )
-            
-            # Clean formatting if the model still provides backticks
+        return {'FINISHED'} # Operators must return a set
+
+class OBJECT_OT_GeminiExecute(bpy.types.Operator):
+    bl_idname = "object.gemini_execute"
+    bl_label = "Generate & Run"
+    
+    def execute(self, context):
+        from google import genai
+        settings = context.scene.gemini_tools
+        key = os.getenv("GEMINI_API_KEY") or settings.api_key
+        
+        if not key:
+            self.report({'ERROR'}, "Missing API Key")
+            return {'CANCELLED'}
+
+        client = genai.Client(api_key=key)
+        full_prompt = f"System: Output ONLY raw Blender Python code. User: {settings.prompt_input}"
+        
+        try:
+            response = client.models.generate_content(model=settings.model_name, contents=full_prompt)
             raw_code = response.text.replace("```python", "").replace("```", "").strip()
             
-            # Show the code in the system console for debugging
-            print("\n--- GEMINI GENERATED CODE ---")
-            print(raw_code)
-            print("-----------------------------\n")
-            
-            # Execute the code in the global context
+            # Use a restricted context for safety
             exec(raw_code, globals())
-            
-            self.report({'INFO'}, f"Gemini: Success using {settings.model_name}")
-            
+            self.report({'INFO'}, "Code executed")
         except Exception as e:
             self.report({'ERROR'}, f"Error: {str(e)}")
-            print(f"Gemini Error Details: {e}")
-        finally:
-            wm.progress_end()
             
         return {'FINISHED'}
 
@@ -121,49 +105,35 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
     bl_label = 'Gemini 3 AI Assistant'
 
     def draw(self, context):
-    layout = self.layout
-    settings = context.scene.gemini_tools
-    status = settings.connection_status
+        layout = self.layout
+        settings = context.scene.gemini_tools
+        status = settings.connection_status
 
-    col = layout.column(align=True)
-    
-    # UI Feedback for Connection
-    row = col.row(align=True)
-    if status == 'SUCCESS':
-        row.operator("object.gemini_test_connection", icon='CHECKMARK', text="Connected")
-    elif status == 'FAILED':
-        row.alert = True # Turns the button/text red
-        row.operator("object.gemini_test_connection", icon='ERROR', text="Retry Connection")
-    else:
-        row.operator("object.gemini_test_connection", icon='WORLD', text="Test Connection")
+        col = layout.column(align=True)
+        
+        # Test Connection Row
+        row = col.row(align=True)
+        if status == 'SUCCESS':
+            row.operator("object.gemini_test_connection", icon='CHECKMARK', text="Connected")
+        elif status == 'FAILED':
+            row.alert = True
+            row.operator("object.gemini_test_connection", icon='ERROR', text="Retry Connection")
+        else:
+            row.operator("object.gemini_test_connection", icon='WORLD', text="Test Connection")
 
-    # ... rest of your prompt and execute layout ...
-    
-    # Check if API Key exists in .env or was entered manually
-    env_key = os.getenv("GEMINI_API_KEY")
-    
-    col = layout.column(align=True)
-    
-    if env_key:
-        row = col.row()
-        row.label(text="API Key: Loaded from .env", icon='CHECKMARK')
-    else:
-        col.prop(settings, "api_key", icon='KEY')
-        col.label(text="Tip: Set 'GEMINI_API_KEY' in your .env to skip this.", icon='INFO')
-
-    col.prop(settings, "model_name", icon='NODE_COMPOSIT')
-    
-    layout.separator()
-    
-    box = layout.box()
-    box.label(text="Prompt:")
-    box.prop(settings, "prompt_input", text="")
-    
-    layout.operator("object.gemini_execute", icon='CONSOLE', text="Generate & Run")
+        layout.separator()
+        
+        # Input Section
+        box = layout.box()
+        box.prop(settings, "model_name")
+        box.prop(settings, "prompt_input", text="")
+        
+        layout.operator("object.gemini_execute", icon='PLAY')
 
 # --- REGISTRATION ---
 classes = (
     GeminiSettings,
+    OBJECT_OT_GeminiTestConnection,
     OBJECT_OT_GeminiExecute,
     VIEW3D_PT_GeminiPanel,
 )
@@ -180,40 +150,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-
-class GeminiSettings(bpy.types.PropertyGroup):
-    # ... your existing properties ...
-    connection_status: bpy.props.EnumProperty(
-        items=[
-            ('NONE', "Not Tested", ""),
-            ('SUCCESS', "Success", ""),
-            ('FAILED', "Failed", "")
-        ],
-        default='NONE'
-    )
-
-class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
-    bl_idname = "object.gemini_test_connection"
-    bl_label = "Test Connection"
-    
-    def execute(self, context):
-        from google import genai
-        settings = context.scene.gemini_tools
-        
-        # Use key from .env first, then fallback to UI field
-        api_key = os.getenv("GEMINI_API_KEY") or settings.api_key
-        
-        try:
-            client = genai.Client(api_key=api_key)
-            # Minimal request to verify key
-            client.models.generate_content(
-                model="gemini-2.0-flash", 
-                contents="ping"
-            )
-            settings.connection_status = 'SUCCESS'
-            self.report({'INFO'}, "Gemini Connection: SUCCESS")
-        except Exception as e:
-            settings.connection_status = 'FAILED'
-            self.report({'ERROR'}, f"Gemini Connection: FAILED - {str(e)}")
-            
-        return {'FINISHED'}
