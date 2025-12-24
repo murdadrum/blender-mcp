@@ -246,6 +246,7 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
         layout.separator()
         
         box = layout.box()
+        box.prop(settings, "api_key", text="API Key") # Expose the API key field
         box.prop(settings, "model_name")
         box.prop(settings, "prompt_input", text="")
         
