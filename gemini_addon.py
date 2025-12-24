@@ -6,28 +6,28 @@ import sys
 bl_info = {
     "name": "Gemini 3 Blender Assistant",
     "author": "Murdadrum",
-    "version": (1, 3, 0),
+    "version": (1, 3, 1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Gemini MCP",
-    "description": "Integrated Gemini 3 AI for 3D modeling and script generation",
+    "description": "Integrated Gemini 3 AI for modeling and scripting",
     "category": "Development",
 }
 
 # --- ENVIRONMENT & DEPENDENCY SETUP ---
 def setup_environment():
     """Initializes paths and loads environment variables from the local git repo."""
-    # 1. Add custom modules folder to sys.path
+    # 1. Add custom modules folder (where you installed google-genai and python-dotenv)
     user_modules = os.path.join(bpy.utils.user_resource('SCRIPTS'), "modules")
     if user_modules not in sys.path:
         sys.path.append(user_modules)
 
-    # 2. Add local 'src' directory from your git repo
+    # 2. Add local 'src' directory from your git repo based on this file's path
     addon_dir = os.path.dirname(os.path.realpath(__file__))
     src_path = os.path.join(addon_dir, "src")
     if os.path.exists(src_path) and src_path not in sys.path:
         sys.path.append(src_path)
 
-    # 3. Safely load .env file
+    # 3. Force-load .env using absolute path to avoid "Missing key" errors
     try:
         from dotenv import load_dotenv
         env_path = os.path.join(addon_dir, ".env")
@@ -71,25 +71,18 @@ class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
     bl_label = "Test Connection"
     
     def execute(self, context):
-        from google import genai
-        from dotenv import load_dotenv
-        settings = context.scene.gemini_tools
-        
-        # Force reload .env using the absolute path of the script
-        addon_dir = os.path.dirname(os.path.realpath(__file__))
-        load_dotenv(os.path.join(addon_dir, ".env"))
-
-        # Retrieve key and check for empty strings
-        api_key = os.getenv("GEMINI_API_KEY") or settings.api_key
-        
-        if not api_key or api_key.strip() == "":
-            self.report({'ERROR'}, "Missing API Key! Enter it in the UI or check your .env file.")
-            settings.connection_status = 'FAILED'
-            return {'CANCELLED'}
-
+        setup_environment()
         try:
-            client = genai.Client(api_key=api_key)
-            # Connectivity ping - using a known available model
+            from google import genai
+            settings = context.scene.gemini_tools
+            # Priority: .env variable > UI Field
+            key = os.getenv("GEMINI_API_KEY") or settings.api_key
+            
+            if not key:
+                raise ValueError("No API key found. Check your .env file or UI field.")
+
+            client = genai.Client(api_key=key) # Explicitly pass the key
+            # Minimal 'ping' request
             client.models.generate_content(model="gemini-2.0-flash", contents="ping")
             settings.connection_status = 'SUCCESS'
             self.report({'INFO'}, "Gemini: Connection Successful!")
@@ -104,23 +97,17 @@ class OBJECT_OT_GeminiExecute(bpy.types.Operator):
     bl_label = "Generate & Run"
     
     def execute(self, context):
-        from google import genai
-        from dotenv import load_dotenv
-        settings = context.scene.gemini_tools
-
-        # Force reload .env using the absolute path of the script
-        addon_dir = os.path.dirname(os.path.realpath(__file__))
-        load_dotenv(os.path.join(addon_dir, ".env"))
-
-        # Retrieve key and check for empty strings
-        api_key = os.getenv("GEMINI_API_KEY") or settings.api_key
-        
-        if not api_key or api_key.strip() == "":
-            self.report({'ERROR'}, "Missing API Key! Enter it in the UI or check your .env file.")
-            return {'CANCELLED'}
-
+        setup_environment()
         try:
-            client = genai.Client(api_key=api_key)
+            from google import genai
+            settings = context.scene.gemini_tools
+            key = os.getenv("GEMINI_API_KEY") or settings.api_key
+            
+            if not key:
+                self.report({'ERROR'}, "Missing API Key! provide (api_key) argument.")
+                return {'CANCELLED'}
+
+            client = genai.Client(api_key=key) # Explicitly pass the key
             full_prompt = (
                 "You are a Blender Python expert. Output ONLY raw executable code. "
                 "No markdown, no conversation. Task: " + settings.prompt_input
@@ -129,8 +116,7 @@ class OBJECT_OT_GeminiExecute(bpy.types.Operator):
             response = client.models.generate_content(model=settings.model_name, contents=full_prompt)
             raw_code = response.text.replace("```python", "").replace("```", "").strip()
             
-            # Execute in global scope
-            exec(raw_code, globals())
+            exec(raw_code, globals()) # Execute in global scope
             self.report({'INFO'}, "Gemini: Script executed successfully.")
             
         except Exception as e:
@@ -155,7 +141,7 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
 
         col = layout.column(align=True)
         
-        # Test Connection / Feedback
+        # Test Connection button with visual feedback
         row = col.row(align=True)
         if status == 'SUCCESS':
             row.operator("object.gemini_test_connection", icon='CHECKMARK', text="Connected")
@@ -167,7 +153,6 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
 
         layout.separator()
         
-        # Main Interface
         box = layout.box()
         box.prop(settings, "model_name")
         box.prop(settings, "prompt_input", text="")
