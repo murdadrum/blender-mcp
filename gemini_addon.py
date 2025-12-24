@@ -83,7 +83,7 @@ class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
 
             client = genai.Client(api_key=key) # Explicitly pass the key
             # Minimal 'ping' request
-            client.models.generate_content(model="gemini-2.0-flash", contents="ping")
+            client.models.generate_content(model="gemini-3.0-flash", contents="ping")
             settings.connection_status = 'SUCCESS'
             self.report({'INFO'}, "Gemini: Connection Successful!")
         except Exception as e:
