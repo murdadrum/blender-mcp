@@ -29,8 +29,9 @@ def setup_environment():
 
     # 3. Safely load .env file
     try:
-        from dotenv import load_dotenv, find_dotenv
-        load_dotenv(find_dotenv())
+        from dotenv import load_dotenv
+        env_path = os.path.join(addon_dir, ".env")
+        load_dotenv(env_path)
         return True
     except ImportError:
         return False
