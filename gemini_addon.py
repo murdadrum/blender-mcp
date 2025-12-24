@@ -1,31 +1,35 @@
 import bpy
 import os
 import sys
-import subprocess
 
 # --- ADDON METADATA ---
 bl_info = {
     "name": "Gemini 3 Blender Assistant",
     "author": "Murdadrum",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Gemini MCP",
-    "description": "Direct Gemini 3 API integration for code generation",
+    "description": "Integrated Gemini 3 AI for 3D modeling and script generation",
     "category": "Development",
 }
 
-# --- DYNAMIC PATH HANDLING ---
+# --- ENVIRONMENT & DEPENDENCY SETUP ---
 def setup_environment():
-    """Ensure Blender can find .env and local modules from the git repo."""
-    # 1. Add 'modules' folder where you installed google-genai and python-dotenv
+    """Initializes paths and loads environment variables from the local git repo."""
+    # 1. Add custom modules folder to sys.path
     user_modules = os.path.join(bpy.utils.user_resource('SCRIPTS'), "modules")
     if user_modules not in sys.path:
         sys.path.append(user_modules)
 
-    # 2. Try to load .env from the git repo
+    # 2. Add local 'src' directory from your git repo
+    addon_dir = os.path.dirname(os.path.realpath(__file__))
+    src_path = os.path.join(addon_dir, "src")
+    if os.path.exists(src_path) and src_path not in sys.path:
+        sys.path.append(src_path)
+
+    # 3. Safely load .env file
     try:
         from dotenv import load_dotenv, find_dotenv
-        # find_dotenv() searches up the directory tree for your .env file
         load_dotenv(find_dotenv())
         return True
     except ImportError:
@@ -35,27 +39,27 @@ def setup_environment():
 class GeminiSettings(bpy.types.PropertyGroup):
     api_key: bpy.props.StringProperty(
         name="API Key",
-        description="Google AI Studio API Key (Leave blank if using .env)",
+        description="Google AI Studio Key (Leave blank if set in .env)",
         subtype='PASSWORD'
     )
     prompt_input: bpy.props.StringProperty(
         name="Prompt",
-        description="What should the AI do?",
-        default="Create a grid of 10x10 cubes"
+        description="Task for Gemini to perform",
+        default="Create a procedural crystal formation"
     )
     model_name: bpy.props.EnumProperty(
         name="Model",
         items=[
-            ('gemini-3-flash', "Gemini 3 Flash (Fast)", ""),
-            ('gemini-3-pro-preview', "Gemini 3 Pro (Smart)", ""),
+            ('gemini-3-flash', "Gemini 3 Flash", "Fast reasoning"),
+            ('gemini-3-pro-preview', "Gemini 3 Pro", "Deep complex logic"),
         ],
         default='gemini-3-flash'
     )
     connection_status: bpy.props.EnumProperty(
         items=[
             ('NONE', "Not Tested", ""),
-            ('SUCCESS', "Connected", "Icon: CHECKMARK"),
-            ('FAILED', "Failed", "Icon: ERROR")
+            ('SUCCESS', "Connected", ""),
+            ('FAILED', "Connection Error", "")
         ],
         default='NONE'
     )
@@ -63,19 +67,17 @@ class GeminiSettings(bpy.types.PropertyGroup):
 # --- OPERATORS ---
 class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
     bl_idname = "object.gemini_test_connection"
-    bl_label = "Test Gemini Connection"
+    bl_label = "Test Connection"
     
     def execute(self, context):
         setup_environment()
-        from google import genai
-        settings = context.scene.gemini_tools
-        
-        # Priority: .env variable > UI Field
-        key = os.getenv("GEMINI_API_KEY") or settings.api_key
-        
         try:
+            from google import genai
+            settings = context.scene.gemini_tools
+            key = os.getenv("GEMINI_API_KEY") or settings.api_key
+            
             client = genai.Client(api_key=key)
-            # Minimal 'ping' request
+            # Connectivity ping
             client.models.generate_content(model="gemini-2.0-flash", contents="ping")
             settings.connection_status = 'SUCCESS'
             self.report({'INFO'}, "Gemini: Connection Successful!")
@@ -91,31 +93,30 @@ class OBJECT_OT_GeminiExecute(bpy.types.Operator):
     
     def execute(self, context):
         setup_environment()
-        from google import genai
-        settings = context.scene.gemini_tools
-        key = os.getenv("GEMINI_API_KEY") or settings.api_key
-        
-        if not key:
-            self.report({'ERROR'}, "Missing API Key. Check your .env file.")
-            return {'CANCELLED'}
-
         try:
+            from google import genai
+            settings = context.scene.gemini_tools
+            key = os.getenv("GEMINI_API_KEY") or settings.api_key
+            
+            if not key:
+                self.report({'ERROR'}, "API Key missing! Check .env or settings.")
+                return {'CANCELLED'}
+
             client = genai.Client(api_key=key)
             full_prompt = (
-                "System: Output ONLY raw, executable Python code for Blender. "
-                "No markdown, no explanations. "
-                f"Task: {settings.prompt_input}"
+                "You are a Blender Python expert. Output ONLY raw executable code. "
+                "No markdown, no conversation. Task: " + settings.prompt_input
             )
             
             response = client.models.generate_content(model=settings.model_name, contents=full_prompt)
             raw_code = response.text.replace("```python", "").replace("```", "").strip()
             
-            # Execute generated code in the global scope
+            # Execute in global scope
             exec(raw_code, globals())
-            self.report({'INFO'}, "Gemini: Code Executed Successfully")
+            self.report({'INFO'}, "Gemini: Script executed successfully.")
             
         except Exception as e:
-            self.report({'ERROR'}, f"Execution Error: {str(e)}")
+            self.report({'ERROR'}, f"API Error: {str(e)}")
             
         return {'FINISHED'}
 
@@ -128,12 +129,15 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        if not hasattr(context.scene, "gemini_tools"):
+            return
+            
         settings = context.scene.gemini_tools
         status = settings.connection_status
 
         col = layout.column(align=True)
         
-        # Connection Status / Test Button
+        # Test Connection / Feedback
         row = col.row(align=True)
         if status == 'SUCCESS':
             row.operator("object.gemini_test_connection", icon='CHECKMARK', text="Connected")
@@ -145,9 +149,9 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
 
         layout.separator()
         
-        # Model Selection & Prompt
+        # Main Interface
         box = layout.box()
-        box.prop(settings, "model_name", text="Model")
+        box.prop(settings, "model_name")
         box.prop(settings, "prompt_input", text="")
         
         layout.operator("object.gemini_execute", icon='PLAY', text="Generate & Run")
@@ -161,7 +165,6 @@ classes = (
 )
 
 def register():
-    # Attempt environment setup during registration
     setup_environment()
     for cls in classes:
         bpy.utils.register_class(cls)
