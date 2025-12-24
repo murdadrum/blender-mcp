@@ -1,7 +1,15 @@
 import bpy
-import os
 import sys
 import subprocess
+import os
+from dotenv import load_dotenv, find_dotenv
+
+# Find the .env file in your local git repo
+# This works if addon.py is in the same folder as .env
+load_dotenv(find_dotenv()) 
+
+# Fallback check
+api_key = os.getenv("GEMINI_API_KEY")
 
 # --- ADDON METADATA ---
 bl_info = {
@@ -113,20 +121,30 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
     bl_label = 'Gemini 3 AI Assistant'
 
     def draw(self, context):
-        layout = self.layout
-        settings = context.scene.gemini_tools
-        
-        col = layout.column(align=True)
+    layout = self.layout
+    settings = context.scene.gemini_tools
+    
+    # Check if API Key exists in .env or was entered manually
+    env_key = os.getenv("GEMINI_API_KEY")
+    
+    col = layout.column(align=True)
+    
+    if env_key:
+        row = col.row()
+        row.label(text="API Key: Loaded from .env", icon='CHECKMARK')
+    else:
         col.prop(settings, "api_key", icon='KEY')
-        col.prop(settings, "model_name", icon='NODE_COMPOSIT')
-        
-        layout.separator()
-        
-        box = layout.box()
-        box.label(text="Prompt:")
-        box.prop(settings, "prompt_input", text="")
-        
-        layout.operator("object.gemini_execute", icon='CONSOLE', text="Generate & Run")
+        col.label(text="Tip: Set 'GEMINI_API_KEY' in your .env to skip this.", icon='INFO')
+
+    col.prop(settings, "model_name", icon='NODE_COMPOSIT')
+    
+    layout.separator()
+    
+    box = layout.box()
+    box.label(text="Prompt:")
+    box.prop(settings, "prompt_input", text="")
+    
+    layout.operator("object.gemini_execute", icon='CONSOLE', text="Generate & Run")
 
 # --- REGISTRATION ---
 classes = (
