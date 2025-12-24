@@ -123,6 +123,21 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
     def draw(self, context):
     layout = self.layout
     settings = context.scene.gemini_tools
+    status = settings.connection_status
+
+    col = layout.column(align=True)
+    
+    # UI Feedback for Connection
+    row = col.row(align=True)
+    if status == 'SUCCESS':
+        row.operator("object.gemini_test_connection", icon='CHECKMARK', text="Connected")
+    elif status == 'FAILED':
+        row.alert = True # Turns the button/text red
+        row.operator("object.gemini_test_connection", icon='ERROR', text="Retry Connection")
+    else:
+        row.operator("object.gemini_test_connection", icon='WORLD', text="Test Connection")
+
+    # ... rest of your prompt and execute layout ...
     
     # Check if API Key exists in .env or was entered manually
     env_key = os.getenv("GEMINI_API_KEY")
