@@ -7,8 +7,8 @@ import site
 # --- ADDON METADATA ---
 bl_info = {
     "name": "Gemini 3 Blender Assistant",
-    "author": "Murdadrum",
-    "version": (1, 4, 0),
+    "author": "murdadrum",
+    "version": (1, 5, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Gemini MCP",
     "description": "Integrated Gemini 3 AI for modeling and scripting",
@@ -22,6 +22,9 @@ def get_dependencies_status():
     try:
         import google.genai
         import dotenv
+        import sounddevice
+        import numpy
+        import scipy.io.wavfile
         return True
     except ImportError:
         return False
@@ -36,7 +39,7 @@ def install_dependencies():
         os.makedirs(target)
 
     # Install using pip
-    subprocess.check_call([python_exe, "-m", "pip", "install", "google-genai", "python-dotenv", "--target", target])
+    subprocess.check_call([python_exe, "-m", "pip", "install", "google-genai", "python-dotenv", "sounddevice", "numpy", "scipy", "--target", target])
 
 def setup_environment():
     """Initializes paths and loads environment variables."""
@@ -77,7 +80,13 @@ def _manual_env_parse(env_path):
     return env_vars
 
 # --- PROPERTIES ---
-class GeminiSettings(bpy.types.PropertyGroup):
+class GEMINI_MCP_ChatLine(bpy.types.PropertyGroup):
+    role: bpy.props.EnumProperty(
+        items=[('user', "User", ""), ('ai', "AI", "")]
+    )
+    content: bpy.props.StringProperty()
+
+class GEMINI_MCP_Settings(bpy.types.PropertyGroup):
     api_key: bpy.props.StringProperty(
         name="API Key",
         description="Google AI Studio Key (Leave blank if set in .env)",
@@ -104,11 +113,16 @@ class GeminiSettings(bpy.types.PropertyGroup):
         ],
         default='NONE'
     )
+    is_recording: bpy.props.BoolProperty(
+        name="Is Recording",
+        default=False
+    )
+    chat_history: bpy.props.CollectionProperty(type=GEMINI_MCP_ChatLine)
 
 # --- OPERATORS ---
 
-class OBJECT_OT_GeminiInstallDeps(bpy.types.Operator):
-    bl_idname = "object.gemini_install_deps"
+class GEMINI_MCP_OT_InstallDeps(bpy.types.Operator):
+    bl_idname = "gemini_mcp.install_deps"
     bl_label = "Install Dependencies"
     bl_description = "Installs google-genai and python-dotenv"
 
@@ -122,8 +136,8 @@ class OBJECT_OT_GeminiInstallDeps(bpy.types.Operator):
             return {'CANCELLED'}
         return {'FINISHED'}
 
-class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
-    bl_idname = "object.gemini_test_connection"
+class GEMINI_MCP_OT_TestConnection(bpy.types.Operator):
+    bl_idname = "gemini_mcp.test_connection"
     bl_label = "Test Connection"
     
     def execute(self, context):
@@ -132,7 +146,7 @@ class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
             from google import genai
             from dotenv import load_dotenv
             
-            settings = context.scene.gemini_tools
+            settings = context.scene.gemini_mcp
             addon_dir = os.path.dirname(os.path.realpath(__file__))
             env_path = os.path.join(addon_dir, ".env")
             load_dotenv(env_path)
@@ -164,8 +178,8 @@ class OBJECT_OT_GeminiTestConnection(bpy.types.Operator):
             
         return {'FINISHED'}
 
-class OBJECT_OT_GeminiExecute(bpy.types.Operator):
-    bl_idname = "object.gemini_execute"
+class GEMINI_MCP_OT_Execute(bpy.types.Operator):
+    bl_idname = "gemini_mcp.execute"
     bl_label = "Generate & Run"
     
     def execute(self, context):
@@ -174,7 +188,7 @@ class OBJECT_OT_GeminiExecute(bpy.types.Operator):
             from google import genai
             from dotenv import load_dotenv
             
-            settings = context.scene.gemini_tools
+            settings = context.scene.gemini_mcp
             addon_dir = os.path.dirname(os.path.realpath(__file__))
             env_path = os.path.join(addon_dir, ".env")
             load_dotenv(env_path)
@@ -202,6 +216,16 @@ class OBJECT_OT_GeminiExecute(bpy.types.Operator):
             raw_code = response.text.replace("```python", "").replace("```", "").strip()
             
             exec(raw_code, globals())
+            
+            # Update Chat History
+            chat = settings.chat_history.add()
+            chat.role = 'user'
+            chat.content = settings.prompt_input
+            
+            chat = settings.chat_history.add()
+            chat.role = 'ai'
+            chat.content = "Executed command: " + settings.prompt_input
+            
             self.report({'INFO'}, "Gemini: Script executed successfully.")
             
         except Exception as e:
@@ -209,8 +233,162 @@ class OBJECT_OT_GeminiExecute(bpy.types.Operator):
             
         return {'FINISHED'}
 
+class GEMINI_MCP_OT_VoiceRecord(bpy.types.Operator):
+    bl_idname = "gemini_mcp.voice_record"
+    bl_label = "Voice Command"
+    bl_description = "Record a voice command for Gemini"
+    
+    _timer = None
+    _recording = []
+    _sample_rate = 44100
+    _temp_wav = ""
+
+    def modal(self, context, event):
+        settings = context.scene.gemini_mcp
+        
+        if event.type == 'TIMER':
+            if not settings.is_recording:
+                return self.stop_recording(context)
+            
+        return {'PASS_THROUGH'}
+
+    def execute(self, context):
+        setup_environment()
+        settings = context.scene.gemini_mcp
+        
+        if settings.is_recording:
+            # Already recording, stop it
+            settings.is_recording = False
+            return {'FINISHED'}
+        
+        try:
+            import sounddevice as sd
+            import numpy as np
+            import tempfile
+            
+            # Start recording
+            settings.is_recording = True
+            self._recording = []
+            
+            def callback(indata, frames, time, status):
+                if status:
+                    print(status)
+                if settings.is_recording:
+                    self._recording.append(indata.copy())
+            
+            self.stream = sd.InputStream(samplerate=self._sample_rate, channels=1, callback=callback)
+            self.stream.start()
+            
+            # Register timer for modal
+            wm = context.window_manager
+            self._timer = wm.event_timer_add(0.1, window=context.window)
+            wm.modal_handler_add(self)
+            
+            self.report({'INFO'}, "Recording started...")
+            return {'RUNNING_MODAL'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, f"Recording failed: {str(e)}")
+            settings.is_recording = False
+            return {'CANCELLED'}
+
+    def stop_recording(self, context):
+        import numpy as np
+        import scipy.io.wavfile as wav
+        import tempfile
+        from google import genai
+        from dotenv import load_dotenv
+
+        settings = context.scene.gemini_mcp
+        wm = context.window_manager
+        wm.event_timer_remove(self._timer)
+        
+        self.stream.stop()
+        self.stream.close()
+        
+        if not self._recording:
+            self.report({'WARNING'}, "No audio recorded.")
+            return {'FINISHED'}
+            
+        # Process audio
+        audio_data = np.concatenate(self._recording, axis=0)
+        temp_dir = tempfile.gettempdir()
+        self._temp_wav = os.path.join(temp_dir, "gemini_voice_command.wav")
+        wav.write(self._temp_wav, self._sample_rate, audio_data)
+        
+        self.report({'INFO'}, "Processing voice command...")
+        
+        # Call Gemini
+        try:
+            addon_dir = os.path.dirname(os.path.realpath(__file__))
+            env_path = os.path.join(addon_dir, ".env")
+            load_dotenv(env_path)
+            
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                env_vars = _manual_env_parse(env_path)
+                api_key = env_vars.get("GEMINI_API_KEY")
+            api_key = api_key or settings.api_key
+            
+            if not api_key:
+                self.report({'ERROR'}, "Missing API Key")
+                return {'FINISHED'}
+
+            client = genai.Client(api_key=api_key)
+            
+            # Load audio file
+            with open(self._temp_wav, 'rb') as f:
+                audio_bytes = f.read()
+
+            full_prompt = (
+                "You are a Blender Python expert. The user has provided a voice command. "
+                "Output ONLY raw executable code. No markdown, no conversation."
+            )
+            
+            from google.genai import types
+            
+            # Use Part.from_bytes for the new google-genai SDK
+            audio_part = types.Part.from_bytes(
+                data=audio_bytes,
+                mime_type="audio/wav"
+            )
+
+            response = client.models.generate_content(
+                model=settings.model_name,
+                contents=[
+                    full_prompt,
+                    audio_part
+                ]
+            )
+            
+            raw_code = response.text.replace("```python", "").replace("```", "").strip()
+            
+            if raw_code:
+                exec(raw_code, globals())
+                
+                # Update Chat History
+                chat = settings.chat_history.add()
+                chat.role = 'user'
+                chat.content = "[Voice Command]"
+                
+                chat = settings.chat_history.add()
+                chat.role = 'ai'
+                chat.content = "Executed voice command."
+                
+                self.report({'INFO'}, "Gemini: Voice command executed.")
+            else:
+                self.report({'WARNING'}, "Gemini did not return any code.")
+                
+        except Exception as e:
+            self.report({'ERROR'}, f"Processing failed: {str(e)}")
+        finally:
+            if os.path.exists(self._temp_wav):
+                os.remove(self._temp_wav)
+                
+        return {'FINISHED'}
+
 # --- UI PANEL ---
-class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
+class GEMINI_MCP_PT_Panel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Gemini MCP'
@@ -218,47 +396,58 @@ class VIEW3D_PT_GeminiPanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        if not hasattr(context.scene, "gemini_tools"):
+        if not hasattr(context.scene, "gemini_mcp"):
             return
             
-        settings = context.scene.gemini_tools
+        settings = context.scene.gemini_mcp
         
         # Dependency check
         if not get_dependencies_status():
             layout.alert = True
-            layout.operator("object.gemini_install_deps", icon='IMPORT', text="Install Dependencies")
-            layout.label(text="Dependencies missing (google-genai, dotenv)")
+            layout.operator("gemini_mcp.install_deps", icon='IMPORT', text="Install Dependencies")
+            layout.label(text="Dependencies missing (google-genai, sounddevice, etc.)")
             return
 
-        # Normal UI
-        status = settings.connection_status
-        col = layout.column(align=True)
+        # Chat History Display
+        if len(settings.chat_history) > 0:
+            box = layout.box()
+            for msg in settings.chat_history[-5:]: # Show last 5
+                row = box.row()
+                if msg.role == 'user':
+                    row.label(text="YOU:", icon='USER')
+                else:
+                    row.label(text="AI:", icon='BLENDER')
+                row.label(text=msg.content)
         
-        row = col.row(align=True)
-        if status == 'SUCCESS':
-            row.operator("object.gemini_test_connection", icon='CHECKMARK', text="Connected")
-        elif status == 'FAILED':
-            row.alert = True
-            row.operator("object.gemini_test_connection", icon='ERROR', text="Retry Connection")
-        else:
-            row.operator("object.gemini_test_connection", icon='WORLD', text="Test Connection")
-
         layout.separator()
         
+        # Config Box
         box = layout.box()
-        box.prop(settings, "api_key", text="API Key") # Expose the API key field
-        box.prop(settings, "model_name")
-        box.prop(settings, "prompt_input", text="")
+        box.prop(settings, "api_key", text="API Key")
+        box.prop(settings, "model_name", text="Model")
         
-        layout.operator("object.gemini_execute", icon='PLAY', text="Generate & Run")
+        # Prompt Area
+        layout.prop(settings, "prompt_input", text="")
+        
+        # Voice & Execute Buttons
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        if settings.is_recording:
+            row.operator("gemini_mcp.voice_record", icon='REC', text="Recording...")
+        else:
+            row.operator("gemini_mcp.voice_record", icon='SOUND', text="Voice")
+            
+        row.operator("gemini_mcp.execute", icon='PLAY', text="Run Text")
 
 # --- REGISTRATION ---
 classes = (
-    GeminiSettings,
-    OBJECT_OT_GeminiInstallDeps,
-    OBJECT_OT_GeminiTestConnection,
-    OBJECT_OT_GeminiExecute,
-    VIEW3D_PT_GeminiPanel,
+    GEMINI_MCP_ChatLine,
+    GEMINI_MCP_Settings,
+    GEMINI_MCP_OT_InstallDeps,
+    GEMINI_MCP_OT_TestConnection,
+    GEMINI_MCP_OT_Execute,
+    GEMINI_MCP_OT_VoiceRecord,
+    GEMINI_MCP_PT_Panel,
 )
 
 def register():
@@ -266,12 +455,12 @@ def register():
     setup_environment()
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.gemini_tools = bpy.props.PointerProperty(type=GeminiSettings)
+    bpy.types.Scene.gemini_mcp = bpy.props.PointerProperty(type=GEMINI_MCP_Settings)
 
 def unregister():
     for cls in classes:
         bpy.utils.unregister_class(cls)
-    del bpy.types.Scene.gemini_tools
+    del bpy.types.Scene.gemini_mcp
 
 if __name__ == "__main__":
     register()
